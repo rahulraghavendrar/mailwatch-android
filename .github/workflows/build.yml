@@ -1,0 +1,72 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build the APK
+        id: build
+        run: |
+          chmod +x gradlew
+          set -o pipefail
+          ./gradlew assembleRelease --no-daemon --stacktrace 2>&1 | tee build.log
+
+      - name: Rename APK
+        run: cp app/build/outputs/apk/release/app-release.apk MailWatch.apk
+
+      - name: Publish to Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: MailWatch (build ${{ github.run_number }})
+          body: |
+            **To install on your phone:** tap **MailWatch.apk** below, then open the downloaded file.
+            Updating? Install it over the old version; your reminders and inboxes are kept.
+          files: MailWatch.apk
+          make_latest: true
+
+      # Writes a short build report to the `ci-status` branch so build errors are easy to read.
+      - name: Report build status
+        if: always()
+        env:
+          OUTCOME: ${{ steps.build.outcome }}
+        run: |
+          mkdir -p /tmp/status && cd /tmp/status
+          git init -q
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          {
+            echo "run: ${{ github.run_number }}"
+            echo "commit: ${{ github.sha }}"
+            echo "build: $OUTCOME"
+            echo
+            echo "## errors"
+            grep -E "^e: |error:|What went wrong|Could not|FAILURE" "$GITHUB_WORKSPACE/build.log" | head -150 || true
+            echo
+            echo "## tail"
+            tail -80 "$GITHUB_WORKSPACE/build.log" || true
+          } > status.md
+          git add status.md
+          git commit -qm "Build status for run ${{ github.run_number }}"
+          git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" HEAD:ci-status
